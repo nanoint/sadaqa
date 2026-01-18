@@ -1,0 +1,33 @@
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: auto-sadaqa-backend
+  labels:
+    cloud.googleapis.com/location: us-central1 # Update with your preferred region
+spec:
+  template:
+    metadata:
+      annotations:
+        autoscaling.knative.dev/minScale: "0"
+        autoscaling.knative.dev/maxScale: "10"
+    spec:
+      containers:
+      - image: gcr.io/YOUR_PROJECT_ID/auto-sadaqa-backend:latest
+        ports:
+        - containerPort: 8080
+        resources:
+          limits:
+            cpu: "1000m"
+            memory: "512Mi"
+        env:
+        - name: DATABASE_URL
+          value: "postgres://user:password@hostname:5432/autosadaqa?sslmode=disable"
+        - name: FREEDOMPAY_MERCHANT_ID
+          value: "your_merchant_id"
+        - name: FREEDOMPAY_SECRET
+          value: "your_secret_key"
+        - name: TELEGRAM_BOT_TOKEN
+          value: "your_telegram_bot_token"
+        # Optional: If you want to customize the script name expected in webhook signature
+        - name: FREEDOMPAY_SCRIPT_NAME
+          value: "freedompay" 

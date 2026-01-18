@@ -1,0 +1,5 @@
+{
+  "name": "Auto Sadaqa",
+  "description": "A Telegram Mini App for recurring donations to Mosques in Kazakhstan, featuring AI-powered Sadaqa guidance.",
+  "requestFramePermissions": []
+}
