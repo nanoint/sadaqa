@@ -5,7 +5,9 @@ import (
 	"encoding/xml"
 	"fmt"
 	"log"
+	"net/url"
 	"os"
+	"time"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/logger"
@@ -19,12 +21,18 @@ import (
 
 // Config vars (mock env)
 const (
-	SecretKey  = "your_secret_key" // Should come from env
-	ScriptName = "freedompay"      // The script name configured in Freedom Pay (e.g. "result.php" or "freedompay")
-	BotToken   = "your_telegram_bot_token" // Env var
+	// In production, fetch these from os.Getenv
+	DefaultScriptName = "freedompay"
 )
 
 var db *pgxpool.Pool
+
+// InitPaymentInput defines the expected body for payment initialization
+type InitPaymentInput struct {
+	MosqueID  string `json:"mosqueId"`
+	Amount    int    `json:"amount"` // Amount in KZT
+	Frequency string `json:"frequency"`
+}
 
 func main() {
 	// 1. Initialize DB Connection
@@ -62,7 +70,11 @@ func main() {
 
 	// 4. Protected API Routes (User interaction)
 	// All routes in this group require valid Telegram Init Data
-	api := app.Group("/api", middleware.TelegramAuth(BotToken))
+	botToken := os.Getenv("TELEGRAM_BOT_TOKEN")
+	if botToken == "" {
+		botToken = "your_telegram_bot_token"
+	}
+	api := app.Group("/api", middleware.TelegramAuth(botToken))
 	
 	api.Get("/me", func(c *fiber.Ctx) error {
 		userID := c.Locals("user_id")
@@ -76,6 +88,87 @@ func main() {
 		})
 	})
 
+	api.Post("/init-payment", func(c *fiber.Ctx) error {
+		var input InitPaymentInput
+		if err := c.BodyParser(&input); err != nil {
+			return c.Status(400).JSON(fiber.Map{"error": "Invalid input"})
+		}
+
+		if db == nil {
+			return c.Status(500).JSON(fiber.Map{"error": "Database not connected"})
+		}
+
+		// Retrieve User ID from context (set by TelegramAuth middleware)
+		userID, ok := c.Locals("user_id").(int64)
+		if !ok {
+			return c.Status(401).JSON(fiber.Map{"error": "User ID not found in context"})
+		}
+
+		orderID := fmt.Sprintf("sub_%d_%d", userID, time.Now().Unix())
+		
+		// Config - prefer Env vars
+		merchantID := os.Getenv("FREEDOMPAY_MERCHANT_ID")
+		if merchantID == "" {
+			merchantID = "526868" // Fallback/Test ID
+		}
+		secretKey := os.Getenv("FREEDOMPAY_SECRET")
+		if secretKey == "" {
+			secretKey = "SecretKey01" // Fallback/Test Key
+		}
+		// Base URL for webhooks
+		appBaseUrl := os.Getenv("APP_BASE_URL")
+		if appBaseUrl == "" {
+			appBaseUrl = "https://your-app-url.com" 
+		}
+
+		// 1. Construct Freedom Pay Request
+		req := freedompay.PaymentRequest{
+			PgMerchantId:     merchantID,
+			PgAmount:         fmt.Sprintf("%d", input.Amount),
+			PgOrderId:        orderID,
+			PgDescription:    "Sadaqa Subscription",
+			PgSalt:           "random_salt_" + fmt.Sprintf("%d", time.Now().UnixNano()),
+			PgRecurringStart: true, // CRITICAL: This tells Freedom Pay to save the card
+		}
+
+		// 2. Generate Signature (init_payment.php)
+		req.PgSig = req.GenerateSignature("init_payment.php", secretKey)
+
+		// 3. Construct the Redirect URL
+		queryParams := url.Values{}
+		queryParams.Add("pg_merchant_id", req.PgMerchantId)
+		queryParams.Add("pg_amount", req.PgAmount)
+		queryParams.Add("pg_order_id", req.PgOrderId)
+		queryParams.Add("pg_description", req.PgDescription)
+		queryParams.Add("pg_salt", req.PgSalt)
+		queryParams.Add("pg_recurring_start", "1")
+		queryParams.Add("pg_sig", req.PgSig)
+		
+		// IMPORTANT: Set Tunnel/Production URL for webhook result
+		webhookURL := fmt.Sprintf("%s/webhooks/freedompay", appBaseUrl)
+		queryParams.Add("pg_result_url", webhookURL)
+
+		paymentUrl := "https://api.freedompay.money/init_payment.php?" + queryParams.Encode()
+
+		// 4. Create "Pending" Subscription in DB
+		// Note: We use the mosque name "Hazrat Sultan" as default/placeholder based on instructions, 
+		// or fetch it if we had a Mosques table.
+		_, err := db.Exec(c.Context(), `
+			INSERT INTO subscriptions (id, user_id, mosque_id, mosque_name, amount, frequency, status, next_payment_date)
+			VALUES ($1, $2, $3, $4, $5, $6, 'pending', NOW() + INTERVAL '1 week')
+		`, orderID, userID, input.MosqueID, "Hazrat Sultan Mosque", input.Amount, input.Frequency)
+
+		if err != nil {
+			log.Printf("DB Insert Error: %v", err)
+			return c.Status(500).JSON(fiber.Map{"error": "Database error creating subscription"})
+		}
+
+		return c.JSON(fiber.Map{
+			"paymentUrl":    paymentUrl,
+			"transactionId": orderID,
+		})
+	})
+
 	// 5. Start Server
 	log.Fatal(app.Listen(":8080"))
 }
@@ -83,6 +176,14 @@ func main() {
 // handleFreedomPayWebhook processes the callback from Freedom Pay
 func handleFreedomPayWebhook(c *fiber.Ctx) error {
 	var req freedompay.WebhookRequest
+	secretKey := os.Getenv("FREEDOMPAY_SECRET")
+	if secretKey == "" {
+		secretKey = "SecretKey01"
+	}
+	scriptName := os.Getenv("FREEDOMPAY_SCRIPT_NAME")
+	if scriptName == "" {
+		scriptName = "freedompay"
+	}
 
 	// 1. Parse Request (supports JSON, XML, Form)
 	if err := c.BodyParser(&req); err != nil {
@@ -91,7 +192,7 @@ func handleFreedomPayWebhook(c *fiber.Ctx) error {
 	}
 
 	// 2. Validate Signature
-	if !req.VerifySignature(ScriptName, SecretKey) {
+	if !req.VerifySignature(scriptName, secretKey) {
 		log.Println("Invalid signature received")
 		return c.Status(fiber.StatusForbidden).SendString("Invalid Signature")
 	}
@@ -120,7 +221,7 @@ func handleFreedomPayWebhook(c *fiber.Ctx) error {
 		PgDescription: "Accepted",
 		PgSalt:        req.PgSalt,
 	}
-	resp.PgSig = resp.GenerateSignature(ScriptName, SecretKey)
+	resp.PgSig = resp.GenerateSignature(scriptName, secretKey)
 
 	c.Set("Content-Type", "application/xml")
 	xmlBytes, _ := xml.Marshal(resp)

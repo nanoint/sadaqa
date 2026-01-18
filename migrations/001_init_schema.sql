@@ -12,7 +12,7 @@ CREATE TABLE IF NOT EXISTS users (
 
 -- Subscriptions table for recurring payments
 CREATE TABLE IF NOT EXISTS subscriptions (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    id TEXT PRIMARY KEY, -- Changed from UUID to TEXT to store "sub_123_456" format
     user_id BIGINT NOT NULL REFERENCES users(id),
     
     -- Donation Details

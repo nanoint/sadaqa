@@ -19,8 +19,6 @@ export const initiatePayment = async (
   console.log(`[API] Initiating payment: Mosque=${mosqueId}, Amount=${amount}, Freq=${frequency}`);
 
   try {
-    // In a real scenario, use fetch:
-    /*
     const response = await fetch(`${API_BASE_URL}/init-payment`, {
       method: 'POST',
       headers: {
@@ -29,23 +27,13 @@ export const initiatePayment = async (
       },
       body: JSON.stringify({ mosqueId, amount, frequency }),
     });
-    if (!response.ok) throw new Error('Payment init failed');
-    return await response.json();
-    */
 
-    // MOCK IMPLEMENTATION
-    await new Promise((resolve) => setTimeout(resolve, 1500));
-    
-    // Validate initData existence (simulating backend check)
-    if (!initData && process.env.NODE_ENV === 'production') {
-      console.warn("Missing Telegram Init Data");
-      // throw new Error("Unauthorized"); // Commented out for dev/preview without Telegram
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Payment init failed: ${errorText}`);
     }
-
-    return {
-      paymentUrl: 'https://paybox.money/mock-checkout', // Mock URL
-      transactionId: `txn_${Math.random().toString(36).substr(2, 9)}`,
-    };
+    
+    return await response.json();
 
   } catch (error) {
     console.error("API Error:", error);
